@@ -1,9 +1,9 @@
 # NodeMCU_ESP32_Dashboard And Automation 
-The LOT solutions for outdoor Aquarium Fish Tank
+## The LOT solutions for outdoor Aquarium Fish Tank
 
-## IOT Group Project Member
+*IOT Group Project Member
 <ul>
-  <li>H D T Y Hettikankanama</li>* [José Luis Pérez](https://github.com/joseluisperez)
+  <li>H D T Y Hettikankanama</li>
   <li>D M U Priyankara </li>
   <li>J L M G A M Gamge</li>
 <li>K M T Nadeeshan</li/>
