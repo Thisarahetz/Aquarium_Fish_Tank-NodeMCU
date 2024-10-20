@@ -4,7 +4,6 @@
 #include <DallasTemperature.h>
 #include <ESP32Servo.h>
 #include <LiquidCrystal_I2C.h>
-
 // Servo motor object
 Servo ObjServo;
 
@@ -15,16 +14,12 @@ static const int LDRSENSOR_PIN = 35;
 static const int WATERFLOW_PIN = 32;
 static const int TRIG_PIN = 23;
 static const int ECHO_PIN = 22;
-static const int ServoGPIO = 13; // GPIO pin for Servo motor\\// Task handles
+static const int ServoGPIO = 13; 
 
 // Output Pin Definitions
-static const int ON_Board_LED = 2; // On-Board LED for WiFi connection status
-static const int RELAY_PIN_LIGHT = 4; // Relay Pin for controlling the light
-static const int RELAY_PIN_FAN = 5; // Relay Pin for controlling the fan
-
-
-// Task Handles
-TaskHandle_t lcdTaskHandle;
+static const int ON_Board_LED = 2;
+static const int RELAY_PIN_LIGHT = 4;
+static const int RELAY_PIN_FAN = 5;
 
 //lcd pins
 // SDA pin to D21
@@ -36,51 +31,45 @@ TaskHandle_t lcdTaskHandle;
 #define CM_TO_INCH 0.393701
 
 
+// Task Handles
+TaskHandle_t lcdTaskHandle;
 
-
-// set the LCD number of columns and rows
+// LCD pins and setup
 int lcdColumns = 32;
 int lcdRows = 2;
 LiquidCrystal_I2C lcd(0x27, lcdColumns, lcdRows);
-
-
-// WiFi Client Objects
-WiFiClient client;
-
-// DS18B20 Temperature Sensor Object
-OneWire oneWire(TEMPSENSOR_PIN);
-DallasTemperature DS18B20(&oneWire);
-
-// ThingSpeak Configuration
-unsigned long Channel_ID = 2694167;
-const char *API_Key = "1PS6KHW9CD6UPX0B";
-
-// Timing Variables
-unsigned long last_time = 0;
-const unsigned long Delay = 10000;
-
-// Sensor Reading Variables
-float temperature;
-float raining;
-float ldrAnalogValue;
-float duration_us, distance_cm;
-float volume;
-volatile long pulse;
-unsigned long lastTime;
-
 
 // WiFi Credentials
 const char *ssid = "Dark_Hetz";
 const char *password = "123@Thisara1964";
 
-// Web Server
-WiFiServer server(80);
+// WiFi Client and ThingSpeak configuration
+WiFiClient client;
+unsigned long Channel_ID = 2694167;
+const char *API_Key = "1PS6KHW9CD6UPX0B";
 
+// Timing Variables
+unsigned long last_time = 0;
+const unsigned long Delay = 10000; // 10 seconds delay
 
-// HTTP Request Variables
-String header;
+// DS18B20 Temperature Sensor Object
+OneWire oneWire(TEMPSENSOR_PIN);
+DallasTemperature DS18B20(&oneWire);
 
-// Timing Variables for HTTP Timeout
+// Sensor Reading Variables
+volatile float temperature;
+volatile float raining;
+volatile float ldrAnalogValue;
+volatile float duration_us, distance_cm;
+volatile float volume;
+volatile long pulse;
+unsigned long lastTime = 0;
+
+// WiFi reconnect timer
+unsigned long previousReconnectAttempt = 0;
+const unsigned long reconnectInterval = 5000; // 5 seconds
+
+// HTTP Timeout
 unsigned long currentTime = millis();
 unsigned long previousTime = 0;
 const long timeoutTime = 2000;
@@ -97,7 +86,6 @@ double waterflowSensor();
 void connectToWiFi();
 void increase();
 
-
 void setup()
 {
     Serial.begin(115200);
@@ -109,12 +97,8 @@ void setup()
     pinMode(TRIG_PIN, OUTPUT);
     pinMode(ECHO_PIN, INPUT);
     pinMode(WATERFLOW_PIN, INPUT);
+    
     attachInterrupt(digitalPinToInterrupt(WATERFLOW_PIN), increase, RISING);
-
-
- 
-
-
 
     // WiFi Configuration
     WiFi.mode(WIFI_STA);
@@ -125,52 +109,29 @@ void setup()
 
     // initialize LCD
     lcd.init();
-    // turn on LCD backlight
     lcd.backlight();
 
     // Create the lcdTask to run in parallel
     xTaskCreate(
-        lcdTask,   /* Task function. */
-        "lcdTask", /* name of task. */
-        10000,     /* Stack size of task */
-        NULL,      /* parameter of the task */
-        1,         /* priority of the task */
-        &lcdTaskHandle); /* Task handle to keep track of created task */
-
-
+        lcdTask, "lcdTask", 10000, NULL, 1, &lcdTaskHandle);
 }
 
 void loop()
 {
-  
-
-    if ((millis() - last_time) > Delay)
+    if (millis() - last_time > Delay)
     {
-        
+        // Sensor Readings
         volume = waterflowSensor();
         temperature = tempSensor();
         ldrAnalogValue = ldrSensor();
         distance_cm = ultrasonicSensor();
         raining = rainSensor();
 
-      
-
-        // water flow sensor
+        // Print sensor values
         Serial.println("Water Flow: " + String(volume) + " L/min");
-
-        // ldr sensor
         Serial.println("LDR Value: " + String(ldrAnalogValue));
-
-        // temperature sensor
         Serial.println("Temperature: " + String(temperature) + " C");
-
-        // ultrasonic sensor
-        float old_distance_cm = distance_cm;
-
-        if (distance_cm > 0 && old_distance_cm != distance_cm)
-        {
-            Serial.println("Distance: " + String(distance_cm) + " cm");
-        }
+        Serial.println("Distance: " + String(distance_cm) + " cm");
 
         // Update ThingSpeak Fields
         ThingSpeak.setField(1, raining);
@@ -180,7 +141,6 @@ void loop()
         ThingSpeak.setField(5, volume);
 
         int data = ThingSpeak.writeFields(Channel_ID, API_Key);
-
         if (data == 200)
         {
             Serial.println("Channel updated successfully!");
@@ -190,12 +150,14 @@ void loop()
             Serial.println("Problem updating channel. HTTP error code: " + String(data));
         }
 
-        // outputController();
+        last_time = millis(); // Reset delay timer
+    }
 
-        
-        last_time = millis();
-
-
+    // Reconnect WiFi if needed
+    if (WiFi.status() != WL_CONNECTED && millis() - previousReconnectAttempt > reconnectInterval)
+    {
+        connectToWiFi();
+        previousReconnectAttempt = millis();
     }
 }
 
@@ -211,7 +173,6 @@ void connectToWiFi()
         }
         Serial.println("\nConnected.");
         digitalWrite(ON_Board_LED, HIGH);
-        
         Serial.println("IP address: ");
         Serial.println(WiFi.localIP());
     }
@@ -220,37 +181,23 @@ void connectToWiFi()
 double rainSensor()
 {
     raining = analogRead(RAINDROP_PIN);
-    
     raining = map(raining, 0, 1023, 255, 0);
+
     Serial.print("Raining: ");
-    if(raining > 0)
-    {
-        Serial.println("Yes");
-    }
-    else
-    {
-        Serial.println("No");
-    }
+    Serial.println(raining > 0 ? "Yes" : "No");
+
     return raining;
 }
 
 double tempSensor()
 {
     DS18B20.requestTemperatures();
-  
-     temperature = DS18B20.getTempCByIndex(0);
+    temperature = DS18B20.getTempCByIndex(0);
 
-     //fan on
-        if(temperature < 30)
-        {
-            digitalWrite(RELAY_PIN_FAN, HIGH);
-        }
-        else
-        {
-            digitalWrite(RELAY_PIN_FAN, LOW);
-        }
+    // Control fan based on temperature
+    digitalWrite(RELAY_PIN_FAN, temperature < 30 ? HIGH : LOW);
 
-        return temperature;
+    return temperature;
 }
 
 double ldrSensor()
@@ -259,46 +206,25 @@ double ldrSensor()
     Serial.print("LDR Value: ");
     Serial.print(ldrAnalogValue);
 
-   if (ldrAnalogValue < 3000) // Adjust this threshold for darkness
-{
-    // It's dark, turn ON the relay (light on)
-    Serial.println(" - Light is ON (Relay Activated)");
-    digitalWrite(RELAY_PIN_LIGHT, HIGH);  // Relay ON
-}
-else
-{
-    // It's bright, turn OFF the relay (light off)
-    Serial.println(" - Light is OFF (Relay Deactivated)");
-    digitalWrite(RELAY_PIN_LIGHT, LOW);   // Relay OFF
-}
+    // Control light based on LDR value
+    digitalWrite(RELAY_PIN_LIGHT, ldrAnalogValue < 3000 ? HIGH : LOW);
 
-
-   
     return ldrAnalogValue;
 }
 
 double ultrasonicSensor()
 {
-    // Ensure the TRIG pin is low for at least 2 microseconds
     digitalWrite(TRIG_PIN, LOW);
     delayMicroseconds(2);
     
-    // Send a 10-microsecond pulse to the TRIG pin
     digitalWrite(TRIG_PIN, HIGH);
     delayMicroseconds(10);
     digitalWrite(TRIG_PIN, LOW);
 
-
-    // Measure the duration of the ECHO pin
     duration_us = pulseIn(ECHO_PIN, HIGH);
-
-    // Calculate the distance in cm
     distance_cm = duration_us * SOUND_SPEED / 2;
 
-    // Calculate the distance in inches
     float distance_inch = distance_cm * CM_TO_INCH;
-
-    // Print the distance in cm and inches
     Serial.print("Distance: ");
     Serial.print(distance_cm);
     Serial.print(" cm, ");
@@ -306,7 +232,6 @@ double ultrasonicSensor()
     Serial.println(" inch");
 
     return distance_cm;
-
 }
 
 double waterflowSensor()
@@ -327,13 +252,11 @@ ICACHE_RAM_ATTR void increase()
     pulse++;
 }
 
-
-
-
 // Task function to handle the LCD display
-void lcdTask(void *parameter) {
-    while (true) {
-        
+void lcdTask(void *parameter)
+{
+    while (true)
+    {
         lcd.clear();
         lcd.setCursor(0, 0);
         lcd.print("Temp: ");
@@ -343,7 +266,7 @@ void lcdTask(void *parameter) {
         lcd.setCursor(0, 1);
         lcd.print("Rain: ");
         lcd.print(raining);
-        lcd.print(" L/min");
+
         delay(15000); // Display for 15 seconds
 
         lcd.clear();
@@ -355,6 +278,7 @@ void lcdTask(void *parameter) {
         lcd.print("Dist: ");
         lcd.print(distance_cm);
         lcd.print(" cm");
+
         delay(15000); // Display for 15 seconds
 
         lcd.clear();
@@ -362,6 +286,7 @@ void lcdTask(void *parameter) {
         lcd.print("Water: ");
         lcd.print(volume);
         lcd.print(" L/min");
+
         delay(2000); // Display for 2 seconds
     }
 }
